@@ -165,65 +165,84 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// ─── GET /api/tutor/:id/schedule ──────────────────────────────
+// แก้ไขหลัก: เพิ่ม DATE(cs.StartDateTime) = CURDATE()
+// เพื่อให้ courseScheduleDetailId ที่ส่งกลับเป็น occurrence ของวันนี้จริง ๆ
+// ไม่ใช่ occurrence อนาคตที่ forEach loop overwrite ทับ
+// ─────────────────────────────────────────────────────────────
 router.get('/:id/schedule', async (req, res) => {
   try {
     const tutorId = Number(req.params.id);
+
     const [rows] = await pool.query(
-      `SELECT 
+      `SELECT
         csd.CourseScheduleDetailId,
         c.CourseID,
         c.CourseName,
         s.SubjectName,
         r.RoomDetail,
-        cs.DayOfWeek as DayIndex,
-        TIME_FORMAT(cs.StartTime, '%H:%i') as StartTime,
-        TIME_FORMAT(cs.EndTime, '%H:%i') as EndTime,
-        (SELECT COUNT(*) FROM enroll WHERE CourseID = c.CourseID) as EnrolledStudents,
-        
-        tc.TutorCheckinId as recordId,
-        CASE 
-          WHEN tc.PhotoEnd IS NOT NULL THEN 'completed'
-          WHEN tc.TutorCheckinId IS NOT NULL THEN 'phase1_done'
+        cs.DayOfWeek        AS DayIndex,
+        TIME_FORMAT(cs.StartTime, '%H:%i') AS StartTime,
+        TIME_FORMAT(cs.EndTime,   '%H:%i') AS EndTime,
+        DATE(cs.StartDateTime)             AS ClassDate,
+        (SELECT COUNT(*) FROM enroll WHERE CourseID = c.CourseID) AS EnrolledStudents,
+
+        tc.TutorCheckinId   AS recordId,
+        CASE
+          WHEN tc.PhotoEnd        IS NOT NULL THEN 'completed'
+          WHEN tc.TutorCheckinId  IS NOT NULL THEN 'phase1_done'
           ELSE NULL
-        END as recordPhase
-        
-       FROM coursescheduledetails csd
-       JOIN courseschedule cs ON csd.CourseScheduleId = cs.CourseScheduleId
-       JOIN courses c ON csd.CourseID = c.CourseID
-       LEFT JOIN subjects s ON csd.SubjectId = s.SubjectId
-       LEFT JOIN rooms r ON csd.RoomId = r.RoomId
-       
-       LEFT JOIN tutorcheckin tc 
-         ON tc.CourseScheduleDetailId = csd.CourseScheduleDetailId
-         AND tc.AdminId = ?
-         AND DATE(tc.Created_at) = CURDATE()
-         
-       WHERE csd.AdminId = ? 
-        AND cs.DayOfWeek IS NOT NULL
+        END                 AS recordPhase
+
+      FROM coursescheduledetails csd
+      JOIN courseschedule  cs ON csd.CourseScheduleId = cs.CourseScheduleId
+      JOIN courses         c  ON csd.CourseID         = c.CourseID
+      LEFT JOIN subjects   s  ON csd.SubjectId        = s.SubjectId
+      LEFT JOIN rooms      r  ON csd.RoomId           = r.RoomId
+
+      -- ✅ JOIN เฉพาะ checkin ของวันนี้ (AdminId ตรงกัน)
+      LEFT JOIN tutorcheckin tc
+        ON  tc.CourseScheduleDetailId = csd.CourseScheduleDetailId
+        AND tc.AdminId                = ?
+        AND DATE(tc.Created_at)       = CURDATE()
+        AND tc.Deleted_at             IS NULL
+
+      WHERE csd.AdminId              = ?
+        AND cs.Deleted_at            IS NULL
+        AND c.Deleted_at             IS NULL
         AND c.Status_Course_Id NOT IN (3, 4)
-        AND c.LastDate >= CURDATE()
-        AND c.StartDate <= CURDATE()`,
-      [tutorId, tutorId]  // ส่ง tutorId 2 ครั้ง
+        AND c.LastDate              >= CURDATE()
+        AND c.StartDate             <= CURDATE()
+        -- ✅ FIX หลัก: กรองเฉพาะ occurrence ของวันนี้จริง ๆ
+        AND DATE(cs.StartDateTime)   = CURDATE()
+      `,
+      [tutorId, tutorId]
     );
 
-    const dayNames = { 1: 'อาทิตย์', 2: 'จันทร์', 3: 'อังคาร', 4: 'พุธ', 5: 'พฤหัสบดี', 6: 'ศุกร์', 7: 'เสาร์' };
+    const dayNames = {
+      1:'อาทิตย์', 2:'จันทร์', 3:'อังคาร',
+      4:'พุธ',     5:'พฤหัสบดี', 6:'ศุกร์', 7:'เสาร์',
+    };
 
     const scheduleData = rows.map(row => ({
-      courseScheduleDetailId: row.CourseScheduleDetailId,
-      courseId: row.CourseID,
-      day: dayNames[row.DayIndex],
-      time: `${row.StartTime}-${row.EndTime}`,
-      subject: row.SubjectName ? `${row.CourseName} (${row.SubjectName})` : row.CourseName,
-      room: row.RoomDetail || 'ไม่ระบุห้อง',
-      students: row.EnrolledStudents,
+      courseScheduleDetailId: row.CourseScheduleDetailId,  // ✅ ถูก occurrence แน่นอน
+      courseId:    row.CourseID,
+      classDate:   row.ClassDate,   // วันที่จริงของคาบนี้ (เพิ่มใหม่)
+      day:         dayNames[row.DayIndex],
+      time:        `${row.StartTime}-${row.EndTime}`,
+      subject:     row.SubjectName
+        ? `${row.CourseName} (${row.SubjectName})`
+        : row.CourseName,
+      room:        row.RoomDetail   || 'ไม่ระบุห้อง',
+      students:    row.EnrolledStudents,
       maxStudents: 30,
-      recordId: row.recordId || null, 
-      recordPhase: row.recordPhase || null, 
+      recordId:    row.recordId    ?? null,
+      recordPhase: row.recordPhase ?? null,
     }));
 
     res.json(scheduleData);
   } catch (e) {
-    console.error(e);
+    console.error('[GET /tutor/:id/schedule]', e);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -239,6 +258,72 @@ router.post('/:id/upload-profile', upload.single('profileImage'), async (req, re
 router.delete('/:id/delete-profile', async (req, res) => {
   await pool.query('UPDATE admin SET Photo = NULL WHERE AdminId = ?', [req.params.id]);
   res.json({ message: 'Deleted' });
+});
+
+// GET /api/admin/tutors/attendance?startDate=2026-01-01&endDate=2026-04-30
+router.get('/attendance', async (req, res) => {
+  const {
+      startDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+          .toISOString().slice(0, 10),
+      endDate = new Date().toISOString().slice(0, 10),
+  } = req.query;
+
+  try {
+      const rows = await q(
+          `SELECT
+              a.AdminId,
+              a.Nickname,
+              a.Firstname,
+              a.Lastname,
+
+              -- คาบที่ควรสอนในช่วงนี้ (ผ่านมาแล้ว)
+              COUNT(DISTINCT csd.CourseScheduleDetailId)  AS TotalScheduled,
+
+              -- checkin แล้ว
+              COUNT(DISTINCT tc.TutorCheckinId)           AS TotalCheckin,
+
+              -- ยังไม่จ่ายเงิน
+              COUNT(DISTINCT CASE
+                  WHEN tc.TutorCheckinId IS NOT NULL
+                   AND tc.TutorPaymentId IS NULL
+                  THEN tc.TutorCheckinId
+              END)                                        AS UnpaidCheckin,
+
+              -- จ่ายแล้ว
+              COUNT(DISTINCT CASE
+                  WHEN tc.TutorPaymentId IS NOT NULL
+                  THEN tc.TutorCheckinId
+              END)                                        AS PaidCheckin
+
+           FROM admin a
+           JOIN coursescheduledetails csd ON csd.AdminId = a.AdminId
+           JOIN courseschedule cs         ON cs.CourseScheduleId = csd.CourseScheduleId
+           LEFT JOIN tutorcheckin tc      ON tc.CourseScheduleDetailId = csd.CourseScheduleDetailId
+                                         AND tc.Deleted_at IS NULL
+           WHERE a.RoleId     = 2
+             AND a.Deleted_at IS NULL
+             AND cs.Deleted_at IS NULL
+             AND DATE(cs.StartDateTime) BETWEEN ? AND ?
+             AND cs.StartDateTime <= NOW()
+           GROUP BY a.AdminId, a.Nickname, a.Firstname, a.Lastname
+           ORDER BY TotalScheduled DESC`,
+          [startDate, endDate]
+      );
+
+      // คำนวณ attendance rate ฝั่ง JS เพื่อไม่ให้ query ซับซ้อนเกิน
+      const data = rows.map(r => ({
+          ...r,
+          AttendanceRate: r.TotalScheduled > 0
+              ? Math.round((r.TotalCheckin / r.TotalScheduled) * 100)
+              : null,
+          MissedCount: r.TotalScheduled - r.TotalCheckin,
+      }));
+
+      res.json({ startDate, endDate, tutors: data });
+  } catch (err) {
+      console.error('[GET /tutors/attendance]', err);
+      res.status(500).json({ message: err.message });
+  }
 });
 
 module.exports = router;

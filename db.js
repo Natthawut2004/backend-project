@@ -10,7 +10,8 @@ database : process.env.DB_NAME,
 waitForConnections : true,
 connectionLimit : 10,
 queueLimit : 0,
-namedPlaceholders : true
+namedPlaceholders : true,
+timezone: '+07:00',
 })
 
 async function query(sql, params) {

@@ -20,6 +20,11 @@ const tutorRoutes = require('./routes/tutor.routes');
 const newsRoute = require('./routes/news.routes');
 const tutorContentRoutes = require('./routes/tutorContent.routes');
 const tutorIncomeRoute = require('./routes/tutor.income.routes');
+const adminCourses = require('./routes/admin.courses.routes');
+const adminTutorsRoutes   = require('./routes/admin.tutors.routes');
+const adminStudentsRoutes = require('./routes/admin.students.routes');
+const adminSeheduleRoutes = require('./routes/admin.schedule.routes');
+const holidaysRouter = require('./routes/admin.holidays.routes');
 
 app.get('/', (req, res) => {
   res.json({ ok: true, service: 'Express + MySQL2 + JWT' });
@@ -35,9 +40,11 @@ app.use('/api/tutor', tutorRoutes);
 app.use('/api/news', newsRoute);
 app.use('/api/tutor-content', tutorContentRoutes);
 app.use('/api/tutor', tutorIncomeRoute);   // รายได้ → /api/tutor/income/:adminId
-
-// 3. ทำให้โฟลเดอร์ uploads เข้าถึงได้จากหน้าเว็บ (สำคัญมาก!)
-app.use('/uploads', express.static('uploads'));
+app.use('/api/admin', adminCourses);
+app.use('/api/admin', adminTutorsRoutes);
+app.use('/api/admin', adminStudentsRoutes);
+app.use('/api/admin/schedule', adminSeheduleRoutes);
+app.use('/api/admin/holidays', holidaysRouter);
 
 //404 Handler
 app.use((req, res) => {
