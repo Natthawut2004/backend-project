@@ -13,6 +13,10 @@ queueLimit : 0,
 namedPlaceholders : true,
 timezone: '+07:00',
 charset: 'utf8mb4',
+ssl: {
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: true
+  }
 })
 
 async function query(sql, params) {
