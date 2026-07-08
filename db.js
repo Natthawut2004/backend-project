@@ -19,6 +19,13 @@ ssl: {
   }
 })
 
+// ⬇️ เพิ่มส่วนนี้เข้าไป
+pool.on('connection', (connection) => {
+    connection.query(
+      "SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"
+    );
+  });
+
 async function query(sql, params) {
     const [rows] = await pool.execute(sql,params);
     return rows

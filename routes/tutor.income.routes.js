@@ -90,7 +90,8 @@ router.get('/income/:adminId', async (req, res) => {
       WHERE tc.AdminId = ?
         AND tc.Deleted_at IS NULL
         AND cs.Deleted_at IS NULL
-      GROUP BY tc.TutorCheckinId
+      GROUP BY tc.TutorCheckinId, tc.TutorPaymentId, tc.Created_at, 
+         cs.StartDateTime, cs.EndDateTime, c.CourseID, c.CourseName, subj.SubjectName
       ORDER BY cs.StartDateTime DESC
     `, [adminId]);
 
