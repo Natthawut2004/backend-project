@@ -43,6 +43,162 @@ router.get('/students', async (req, res) => {
   }
 });
 
+// ─── GET /api/admin/students/performance ──────────────────────────────────────
+// วางไว้ก่อน route /students/:id !!!
+router.get('/students/performance', async (_req, res) => {
+  try {
+    const rows = await q(`
+      SELECT
+        u.UserId,
+        u.Firstname,
+        u.Lastname,
+        u.Nickname,
+        u.GPA,
+        u.GradeLevelId,
+        g.GradeDetail,
+        u.SchoolName,
+
+        -- ── Attendance ───────────────────────────────────────────────────────
+        COUNT(DISTINCT sa.StudentAttendanceId)                          AS TotalClasses,
+        SUM(CASE WHEN sa.Status = '1' THEN 1 ELSE 0 END)               AS TotalAttended,
+        ROUND(
+          SUM(CASE WHEN sa.Status = '1' THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(DISTINCT sa.StudentAttendanceId), 0) * 100
+        , 1)                                                            AS AttendanceRate,
+
+        -- ── Pre-test (ExamTypeId = 1): ค่าเฉลี่ยเป็น % ─────────────────────
+        ROUND(
+          AVG(
+            CASE WHEN e.ExamTypeId = 1 AND t.MaxScore > 0
+            THEN (t.Score / t.MaxScore * 100)
+            END
+          )
+        , 1)                                                            AS PreTestScore,
+        COUNT(CASE WHEN e.ExamTypeId = 1 AND t.MaxScore > 0 THEN 1 END) AS PreTestCount,
+
+        -- ── Mid-test (ExamTypeId = 2) ────────────────────────────────────────
+        ROUND(
+          AVG(
+            CASE WHEN e.ExamTypeId = 2 AND t.MaxScore > 0
+            THEN (t.Score / t.MaxScore * 100)
+            END
+          )
+        , 1)                                                            AS MidTestScore,
+        COUNT(CASE WHEN e.ExamTypeId = 2 AND t.MaxScore > 0 THEN 1 END) AS MidTestCount,
+
+        -- ── Post-test (ExamTypeId = 3) ───────────────────────────────────────
+        ROUND(
+          AVG(
+            CASE WHEN e.ExamTypeId = 3 AND t.MaxScore > 0
+            THEN (t.Score / t.MaxScore * 100)
+            END
+          )
+        , 1)                                                            AS PostTestScore,
+        COUNT(CASE WHEN e.ExamTypeId = 3 AND t.MaxScore > 0 THEN 1 END) AS PostTestCount
+
+      FROM users u
+      LEFT JOIN gradelevel g
+        ON g.GradeLevelId = u.GradeLevelId
+      LEFT JOIN studentattendance sa
+        ON sa.UserId = u.UserId AND sa.Deleted_at IS NULL
+      LEFT JOIN exam e
+        ON e.UserId = u.UserId AND e.Deleted_at IS NULL
+      LEFT JOIN test t
+        ON t.TestId = e.TestId AND t.Deleted_at IS NULL
+      WHERE u.Deleted_at IS NULL
+      GROUP BY u.UserId
+      HAVING TotalClasses >= 1
+    `);
+
+    // ── คำนวณ PerformanceScore ใน JS ────────────────────────────────────────
+    // สูตร: attendance 40% + pre 20% + mid 20% + post 20%
+    // ถ้าข้อมูล test ประเภทไหนหายไป → กระจาย weight คืนให้ attendance
+    const result = rows.map(r => {
+      const att  = Number(r.AttendanceRate) || 0;
+      const pre  = r.PreTestScore  !== null ? Number(r.PreTestScore)  : null;
+      const mid  = r.MidTestScore  !== null ? Number(r.MidTestScore)  : null;
+      const post = r.PostTestScore !== null ? Number(r.PostTestScore) : null;
+
+      const testCount   = [pre, mid, post].filter(v => v !== null).length;
+      // base weight: att=40, แต่ถ้าไม่มี test เลย att=100
+      const testWeight  = testCount > 0 ? 60 : 0;
+      const attWeight   = 100 - testWeight;
+      const perTest     = testCount > 0 ? Math.round(testWeight / testCount) : 0;
+
+      let score = att * (attWeight / 100);
+      if (pre  !== null) score += pre  * (perTest / 100);
+      if (mid  !== null) score += mid  * (perTest / 100);
+      if (post !== null) score += post * (perTest / 100);
+
+      // AttendanceScore ใช้แสดงใน breakdown (scale เทียบ weight จริง)
+      const attScore   = Math.round(att * (attWeight / 100));
+      const preScore   = pre  !== null ? Math.round(pre  * (perTest / 100)) : null;
+      const midScore   = mid  !== null ? Math.round(mid  * (perTest / 100)) : null;
+      const postScore  = post !== null ? Math.round(post * (perTest / 100)) : null;
+
+      return {
+        ...r,
+        AttendanceRate:   att,
+        PreTestScore:     pre,
+        MidTestScore:     mid,
+        PostTestScore:    post,
+        AttendanceWeight: attWeight,
+        TestWeight:       perTest,
+        PerformanceScore: Math.min(100, Math.round(score)),
+        // สำหรับ breakdown bar
+        AttendanceContrib: attScore,
+        PreTestContrib:    preScore,
+        MidTestContrib:    midScore,
+        PostTestContrib:   postScore,
+      };
+    });
+
+    // เรียงจากคะแนนสูงสุด
+    result.sort((a, b) => b.PerformanceScore - a.PerformanceScore);
+    res.json(result);
+  } catch (err) {
+    console.error('[GET /students/performance]', err);
+    res.status(500).json({ message: 'ดึงข้อมูลไม่สำเร็จ', error: err.message });
+  }
+});
+
+// ─── GET /api/admin/students/top-attendance ───────────────────────────────────
+router.get('/students/top-attendance', async (_req, res) => {
+  try {
+    const rows = await q(`
+      SELECT
+        u.UserId,
+        u.Firstname,
+        u.Lastname,
+        u.Nickname,
+        u.GPA,
+        u.SchoolName,
+        g.GradeDetail,
+        COUNT(sa.StudentAttendanceId)                                         AS TotalClasses,
+        SUM(CASE WHEN sa.Status = '1' THEN 1 ELSE 0 END)                     AS TotalAttended,
+        ROUND(
+          SUM(CASE WHEN sa.Status = '1' THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(sa.StudentAttendanceId), 0) * 100
+        , 1)                                                                  AS AttendanceRate
+      FROM users u
+      JOIN studentattendance sa
+        ON sa.UserId = u.UserId AND sa.Deleted_at IS NULL
+      LEFT JOIN gradelevel g ON g.GradeLevelId = u.GradeLevelId
+      WHERE u.Deleted_at IS NULL
+      GROUP BY u.UserId
+      HAVING TotalClasses >= 1
+      ORDER BY AttendanceRate DESC, TotalAttended DESC
+      LIMIT 5
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('[GET /students/top-attendance]', err);
+    res.status(500).json({ message: 'ดึงข้อมูลไม่สำเร็จ', error: err.message });
+  }
+});
+
+
+
 // ─── GET /api/admin/students/:id ─────────────────────────────────────────────
 router.get('/students/:id', async (req, res) => {
   const { id } = req.params;

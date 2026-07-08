@@ -165,14 +165,32 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ─── GET /api/tutor/:id/schedule ──────────────────────────────
-// แก้ไขหลัก: เพิ่ม DATE(cs.StartDateTime) = CURDATE()
-// เพื่อให้ courseScheduleDetailId ที่ส่งกลับเป็น occurrence ของวันนี้จริง ๆ
-// ไม่ใช่ occurrence อนาคตที่ forEach loop overwrite ทับ
-// ─────────────────────────────────────────────────────────────
 router.get('/:id/schedule', async (req, res) => {
   try {
     const tutorId = Number(req.params.id);
+
+    // ✅ รองรับ mock วันที่ตอนเทส ผ่าน ?date=YYYY-MM-DD
+    // ถ้าไม่ส่งมา ใช้วันที่จริงปัจจุบัน
+    const refDate = req.query.date ? new Date(req.query.date) : new Date();
+
+    const jsDay = refDate.getDay();
+    const diffToMonday = jsDay === 0 ? -6 : 1 - jsDay;
+    const monday = new Date(refDate);
+    monday.setDate(refDate.getDate() + diffToMonday);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+
+    // แก้ไขฟังก์ชัน fmt เพื่อหลีกเลี่ยง .toISOString()
+    const fmt = (d) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const date = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${date}`;
+    };
+
+    const weekStart = fmt(monday);
+    const weekEnd = fmt(sunday);
+    const todayStr = fmt(refDate);
 
     const [rows] = await pool.query(
       `SELECT
@@ -184,7 +202,7 @@ router.get('/:id/schedule', async (req, res) => {
         cs.DayOfWeek        AS DayIndex,
         TIME_FORMAT(cs.StartTime, '%H:%i') AS StartTime,
         TIME_FORMAT(cs.EndTime,   '%H:%i') AS EndTime,
-        DATE(cs.StartDateTime)             AS ClassDate,
+        DATE_FORMAT(cs.StartDateTime, '%Y-%m-%d') AS ClassDate,
         (SELECT COUNT(*) FROM enroll WHERE CourseID = c.CourseID) AS EnrolledStudents,
 
         tc.TutorCheckinId   AS recordId,
@@ -200,47 +218,48 @@ router.get('/:id/schedule', async (req, res) => {
       LEFT JOIN subjects   s  ON csd.SubjectId        = s.SubjectId
       LEFT JOIN rooms      r  ON csd.RoomId           = r.RoomId
 
-      -- ✅ JOIN เฉพาะ checkin ของวันนี้ (AdminId ตรงกัน)
+      -- ✅ จับคู่ checkin กับ "วันที่ของคาบนั้นจริงๆ" ไม่ใช่ CURDATE()
+      -- เพราะตอนนี้ดึงทั้งสัปดาห์ ไม่ใช่แค่วันเดียว
       LEFT JOIN tutorcheckin tc
         ON  tc.CourseScheduleDetailId = csd.CourseScheduleDetailId
         AND tc.AdminId                = ?
-        AND DATE(tc.Created_at)       = CURDATE()
+        AND DATE(tc.Created_at)       = DATE(cs.StartDateTime)
         AND tc.Deleted_at             IS NULL
 
       WHERE csd.AdminId              = ?
         AND cs.Deleted_at            IS NULL
         AND c.Deleted_at             IS NULL
         AND c.Status_Course_Id NOT IN (3, 4)
-        AND c.LastDate              >= CURDATE()
-        AND c.StartDate             <= CURDATE()
-        -- ✅ FIX หลัก: กรองเฉพาะ occurrence ของวันนี้จริง ๆ
-        AND DATE(cs.StartDateTime)   = CURDATE()
+        AND c.LastDate              >= ?
+        AND c.StartDate             <= ?
+        -- ✅ ทั้งสัปดาห์ (จันทร์-อาทิตย์) แทนกรองแค่วันเดียว
+        AND DATE(cs.StartDateTime) BETWEEN ? AND ?
       `,
-      [tutorId, tutorId]
+      [tutorId, tutorId, weekStart, weekEnd, weekStart, weekEnd]
     );
 
-    const dayNames = {
-      1:'อาทิตย์', 2:'จันทร์', 3:'อังคาร',
-      4:'พุธ',     5:'พฤหัสบดี', 6:'ศุกร์', 7:'เสาร์',
-    };
+    const dayNames = { 1: 'อาทิตย์', 2: 'จันทร์', 3: 'อังคาร', 4: 'พุธ', 5: 'พฤหัสบดี', 6: 'ศุกร์', 7: 'เสาร์' };
 
     const scheduleData = rows.map(row => ({
-      courseScheduleDetailId: row.CourseScheduleDetailId,  // ✅ ถูก occurrence แน่นอน
+      courseScheduleDetailId: row.CourseScheduleDetailId,
       courseId:    row.CourseID,
-      classDate:   row.ClassDate,   // วันที่จริงของคาบนี้ (เพิ่มใหม่)
+      classDate:   row.ClassDate,
       day:         dayNames[row.DayIndex],
       time:        `${row.StartTime}-${row.EndTime}`,
-      subject:     row.SubjectName
-        ? `${row.CourseName} (${row.SubjectName})`
-        : row.CourseName,
-      room:        row.RoomDetail   || 'ไม่ระบุห้อง',
+      
+      // 👇 แยก 2 บรรทัดนี้ออกมา (แทนการจับรวมกันแบบเดิม)
+      courseName:  row.CourseName,
+      subjectName: row.SubjectName || 'ไม่ระบุวิชา',
+      
+      room:        row.RoomDetail || 'ไม่ระบุห้อง',
       students:    row.EnrolledStudents,
       maxStudents: 30,
-      recordId:    row.recordId    ?? null,
+      recordId:    row.recordId ?? null,
       recordPhase: row.recordPhase ?? null,
     }));
 
-    res.json(scheduleData);
+    // ✅ ส่ง todayDate กลับไปด้วย ให้ frontend ใช้เป็นแหล่งความจริงเดียว
+    res.json({ schedule: scheduleData, todayDate: todayStr, weekStart, weekEnd });
   } catch (e) {
     console.error('[GET /tutor/:id/schedule]', e);
     res.status(500).json({ message: 'Server error' });
@@ -263,14 +282,14 @@ router.delete('/:id/delete-profile', async (req, res) => {
 // GET /api/admin/tutors/attendance?startDate=2026-01-01&endDate=2026-04-30
 router.get('/attendance', async (req, res) => {
   const {
-      startDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-          .toISOString().slice(0, 10),
-      endDate = new Date().toISOString().slice(0, 10),
+    startDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+      .toISOString().slice(0, 10),
+    endDate = new Date().toISOString().slice(0, 10),
   } = req.query;
 
   try {
-      const rows = await q(
-          `SELECT
+    const rows = await q(
+      `SELECT
               a.AdminId,
               a.Nickname,
               a.Firstname,
@@ -307,22 +326,22 @@ router.get('/attendance', async (req, res) => {
              AND cs.StartDateTime <= NOW()
            GROUP BY a.AdminId, a.Nickname, a.Firstname, a.Lastname
            ORDER BY TotalScheduled DESC`,
-          [startDate, endDate]
-      );
+      [startDate, endDate]
+    );
 
-      // คำนวณ attendance rate ฝั่ง JS เพื่อไม่ให้ query ซับซ้อนเกิน
-      const data = rows.map(r => ({
-          ...r,
-          AttendanceRate: r.TotalScheduled > 0
-              ? Math.round((r.TotalCheckin / r.TotalScheduled) * 100)
-              : null,
-          MissedCount: r.TotalScheduled - r.TotalCheckin,
-      }));
+    // คำนวณ attendance rate ฝั่ง JS เพื่อไม่ให้ query ซับซ้อนเกิน
+    const data = rows.map(r => ({
+      ...r,
+      AttendanceRate: r.TotalScheduled > 0
+        ? Math.round((r.TotalCheckin / r.TotalScheduled) * 100)
+        : null,
+      MissedCount: r.TotalScheduled - r.TotalCheckin,
+    }));
 
-      res.json({ startDate, endDate, tutors: data });
+    res.json({ startDate, endDate, tutors: data });
   } catch (err) {
-      console.error('[GET /tutors/attendance]', err);
-      res.status(500).json({ message: err.message });
+    console.error('[GET /tutors/attendance]', err);
+    res.status(500).json({ message: err.message });
   }
 });
 

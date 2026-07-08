@@ -373,37 +373,31 @@ router.get('/tutors/performance', async (req, res) => {
         a.Photo,
         a.RatePerTutors,
 
-        ROUND(
-          IFNULL(COUNT(DISTINCT tc.TutorCheckinId) / NULLIF(COUNT(DISTINCT csd.CourseScheduleDetailId), 0) * 100, 0)
-        , 1) AS CheckinRate,
-
+        -- A: อัตราเช็กอิน (0–100)
         ROUND(
           IFNULL(
-            SUM(CASE WHEN tc.PhotoStart IS NOT NULL AND tc.PhotoEnd IS NOT NULL THEN 1 ELSE 0 END)
-            / NULLIF(COUNT(DISTINCT tc.TutorCheckinId), 0) * 100
+            COUNT(DISTINCT tc.TutorCheckinId)
+            / NULLIF(COUNT(DISTINCT csd.CourseScheduleDetailId), 0) * 100
           , 0)
-        , 1) AS PhotoCompleteRate,
+        , 1) AS CheckinRate,
 
-        GREATEST(0,
-          100 - (COUNT(CASE WHEN tc.TutorCheckinId IS NOT NULL AND tc.TutorPaymentId IS NULL THEN 1 END) * 10)
-        ) AS PaymentScore,
-
+        -- B: ความสม่ำเสมอ (0–100) — stddev น้อย = สม่ำเสมอมาก
         GREATEST(0, ROUND(
           100 - IFNULL(
             STDDEV(weekly.cnt) / NULLIF(AVG(weekly.cnt), 0) * 100
           , 0)
         , 1)) AS ConsistencyScore,
 
-        ROUND(
-          IFNULL(COUNT(DISTINCT tc.TutorCheckinId) / NULLIF(COUNT(DISTINCT csd.CourseScheduleDetailId),0)*100, 0) * 0.40
-          + IFNULL(SUM(CASE WHEN tc.PhotoStart IS NOT NULL AND tc.PhotoEnd IS NOT NULL THEN 1 ELSE 0 END)
-              / NULLIF(COUNT(DISTINCT tc.TutorCheckinId),0)*100, 0) * 0.25
-          + GREATEST(0, 100 - COUNT(CASE WHEN tc.TutorCheckinId IS NOT NULL AND tc.TutorPaymentId IS NULL THEN 1 END)*10) * 0.20
-          + GREATEST(0, 100 - IFNULL(STDDEV(weekly.cnt)/NULLIF(AVG(weekly.cnt),0)*100, 0)) * 0.15
-        , 1) AS PerformanceScore,
+        -- C: ชั่วโมงสอนสะสม (นาที) — เอาไป normalize ทีหลังใน Node
+        IFNULL(
+          SUM(DISTINCT TIMESTAMPDIFF(MINUTE,
+            ADDTIME('2000-01-01', cs.StartTime),
+            ADDTIME('2000-01-01', cs.EndTime)
+          ))
+        , 0) AS TotalMinutes,
 
-        COUNT(DISTINCT tc.TutorCheckinId)            AS TotalCheckin,
-        COUNT(DISTINCT csd.CourseScheduleDetailId)   AS TotalScheduled
+        COUNT(DISTINCT tc.TutorCheckinId)          AS TotalCheckin,
+        COUNT(DISTINCT csd.CourseScheduleDetailId) AS TotalScheduled
 
       FROM admin a
       LEFT JOIN coursescheduledetails csd ON csd.AdminId = a.AdminId
@@ -436,15 +430,32 @@ router.get('/tutors/performance', async (req, res) => {
       WHERE a.RoleId = 2 AND a.Deleted_at IS NULL
       GROUP BY a.AdminId
       HAVING TotalScheduled > 0
-      ORDER BY PerformanceScore DESC
+      ORDER BY CheckinRate DESC
     `, [startDate, endDate, startDate, endDate]);
-    //   ↑ ส่ง 4 ค่าเพราะ BETWEEN ? AND ? ใช้ 2 ครั้ง (query หลัก + subquery)
 
-    const data = rows.map((r, i) => ({
-      ...r,
-      Rank:  i + 1,
-      Badge: getBadgeLabel(r.PerformanceScore),
-    }));
+    // ── Normalize ชั่วโมงสะสม (0–100) เทียบกับคนที่สอนมากสุด ──
+    const maxMinutes = Math.max(...rows.map(r => r.TotalMinutes), 1);
+
+    const data = rows.map(r => {
+      const checkinScore    = r.CheckinRate;                                    // 40%
+      const consistScore    = r.ConsistencyScore;                               // 30%
+      const workloadScore   = Math.round(r.TotalMinutes / maxMinutes * 100);   // 30%
+
+      const performanceScore = Math.round(
+        checkinScore  * 0.40 +
+        consistScore  * 0.30 +
+        workloadScore * 0.30
+      );
+
+      return {
+        ...r,
+        WorkloadScore:    workloadScore,
+        TotalHours:       +(r.TotalMinutes / 60).toFixed(1),
+        PerformanceScore: performanceScore,
+        Badge:            getBadgeLabel(performanceScore),
+      };
+    }).sort((a, b) => b.PerformanceScore - a.PerformanceScore)
+      .map((r, i) => ({ ...r, Rank: i + 1 }));
 
     res.json({ startDate, endDate, tutors: data });
   } catch (err) {

@@ -25,6 +25,7 @@ const adminTutorsRoutes   = require('./routes/admin.tutors.routes');
 const adminStudentsRoutes = require('./routes/admin.students.routes');
 const adminSeheduleRoutes = require('./routes/admin.schedule.routes');
 const holidaysRouter = require('./routes/admin.holidays.routes');
+const adminAnnoumcement = require('./routes/admin.announcement.routes');
 
 app.get('/', (req, res) => {
   res.json({ ok: true, service: 'Express + MySQL2 + JWT' });
@@ -45,6 +46,7 @@ app.use('/api/admin', adminTutorsRoutes);
 app.use('/api/admin', adminStudentsRoutes);
 app.use('/api/admin/schedule', adminSeheduleRoutes);
 app.use('/api/admin/holidays', holidaysRouter);
+app.use('/api/admin/news', adminAnnoumcement);
 
 //404 Handler
 app.use((req, res) => {
