@@ -94,7 +94,7 @@ router.post('/login', async (req, res) => {
         // หมายเหตุ: ใน DB ไม่มีคอลัมน์ Role ชัดเจน ผมจึงไม่ได้ใส่ไป 
         // หรือถ้าจะใช้ Remark เป็น Role ก็เปลี่ยนเป็น role: user.Remark
         const payload = {
-            id: user.UserId,        // ใช้ UserId ตาม DB
+            userId: user.UserId,        // ใช้ UserId ตาม DB
             username: user.Username,
             firstname: user.Firstname,
             lastname: user.Lastname
