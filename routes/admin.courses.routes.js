@@ -1,18 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
-const multer = require('multer');
-const path = require('path');
+// const multer = require('multer');
+// const path = require('path');
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/');
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage });
+// const storage = multer.diskStorage({
+//   destination: function (req, file, cb) {
+//     cb(null, 'uploads/');
+//   },
+//   filename: function (req, file, cb) {
+//     cb(null, Date.now() + path.extname(file.originalname));
+//   }
+// });
+// const upload = multer({ storage });
+
+const { uploadImage } = require('../middlewares/upload');
 
 async function q(sql, params = []) {
   const [rows] = await pool.query(sql, params);
@@ -285,9 +287,14 @@ router.post("/courses/:id/duplicate", async (req, res) => {
   }
 });
 
-router.post("/upload/image", upload.single("image"), (req, res) => {
+// router.post("/upload/image", upload.single("image"), (req, res) => {
+//   if (!req.file) return res.status(400).json({ message: "ไม่พบไฟล์" });
+//   res.json({ path: `/uploads/${req.file.filename}` });
+// });
+
+router.post("/upload/image", uploadImage.single("image"), (req, res) => {
   if (!req.file) return res.status(400).json({ message: "ไม่พบไฟล์" });
-  res.json({ path: `/uploads/${req.file.filename}` });
+  res.json({ path: req.file.path });  // req.file.path คือ URL เต็มจาก Cloudinary
 });
 
 // ดึงวิชาทั้งหมด

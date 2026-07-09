@@ -43,7 +43,8 @@ router.get('/', async (req, res) => {
         JOIN tutorcoursedetails tcd ON c.CourseID = tcd.CourseID
         JOIN subjects s ON tcd.SubjectId = s.SubjectId
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        GROUP BY c.CourseID, s.SubjectId, tcd.AdminId
+        GROUP BY c.CourseID, s.SubjectId, tcd.AdminId, c.CourseName, s.SubjectName,
+         c.StartDate, c.LastDate, c.Status_Course_Id, tcd.TotalHours
         ORDER BY c.CourseID DESC
       `;
 
