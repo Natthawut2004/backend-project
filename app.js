@@ -14,6 +14,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 const productRoutes = require('./routes/products.routes');
 const authRoutes = require('./routes/auth.routes');
 const coursesRoutes = require('./routes/courses.routes');
+const studentCoursesRoutes = require('./routes/student.courses.routes'); // ✅ ใหม่: course ฝั่ง student/public
 const studentRoutes = require('./routes/student.routes');
 
 
@@ -36,7 +37,15 @@ app.get('/', (req, res) => {
 
 app.use('/auth', authRoutes);
 app.use('/products', productRoutes);
+
+// ⚠️ ลำดับสำคัญ: ต้อง mount studentCoursesRoutes ก่อน coursesRoutes เสมอ
+// เพราะทั้งคู่ mount ที่ path เดียวกัน (/courses)
+// studentCoursesRoutes จะดัก GET / และ GET /:id ไปตอบก่อน
+// ส่วน POST/PUT/DELETE/:id/students ฯลฯ ที่ไม่มีใน studentCoursesRoutes
+// จะถูกส่งต่อ (fall through) ไปให้ coursesRoutes (ของเดิม) จัดการตามปกติ
+app.use('/courses', studentCoursesRoutes);
 app.use('/courses', coursesRoutes);
+
 app.use('/api/student', studentRoutes)
 
 //เป้ว
@@ -62,4 +71,3 @@ const PORT = Number(process.env.PORT || 3000);
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-

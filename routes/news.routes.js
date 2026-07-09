@@ -7,17 +7,21 @@ router.get('/', async (req, res) => {
   try {
     const { role } = req.query;
 
-    // ✅ tutor เห็นข่าวของตัวเอง + ข่าวสาธารณะ
-    // ✅ student/public เห็นแค่ข่าวสาธารณะ
+    // ✅ tutor / admin  → เห็นข่าวของติวเตอร์ (tutor) + ข่าวสาธารณะ (public)
+    // ✅ student / user → เห็นแค่ข่าวสาธารณะ (public)
+    // ✅ ผู้ใช้ทั่วไปที่ไม่ได้ล็อกอิน (ไม่ส่ง role มา หรือ role ไม่ตรงกับที่กำหนด)
+    //    → ถือเป็น public เห็นแค่ข่าวสาธารณะเช่นกัน
     const audienceMap = {
       tutor:   ['tutor', 'public'],
+      admin:   ['tutor', 'public'],
       student: ['public'],
+      user:    ['public'],
+      public:  ['public'],
     };
 
-    const allowed = audienceMap[role];
-    if (!allowed) {
-      return res.status(400).json({ message: 'role ต้องเป็น tutor หรือ student' });
-    }
+    // default เป็น public เสมอถ้าไม่มี role หรือ role ที่ส่งมาไม่ตรงกับที่กำหนดไว้
+    // (เช่น guest ที่ไม่ได้ล็อกอิน)
+    const allowed = audienceMap[role] || audienceMap.public;
 
     const placeholders = allowed.map(() => '?').join(', ');
     const sql = `
