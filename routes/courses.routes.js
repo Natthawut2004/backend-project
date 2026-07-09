@@ -2,86 +2,208 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
-// const { authRequired, requireRole } = require('../middlewares/auth');
 
-// GET /courses  (ดึงทั้งหมด)
+// GET /courses (รองรับการกรองด้วย adminId และแยกรายวิชา)
 router.get('/', async (req, res) => {
   try {
-    const { termId, statusId, availabilityId } = req.query;
-
+    const { termId, statusId, availabilityId, adminId } = req.query;
     const where = [];
     const params = [];
 
-    if (termId) {
-      where.push('Term_Id = ?');
-      params.push(Number(termId));
-    }
-    if (statusId) {
-      where.push('Status_Course_Id = ?');
-      params.push(Number(statusId));
-    }
-    if (availabilityId) {
-      where.push('Course_Availability_Id = ?');
-      params.push(Number(availabilityId));
+    if (termId) { where.push('c.Term_Id = ?'); params.push(Number(termId)); }
+    if (statusId) { where.push('c.Status_Course_Id = ?'); params.push(Number(statusId)); }
+    if (availabilityId) { where.push('c.Course_Availability_Id = ?'); params.push(Number(availabilityId)); }
+
+    if (adminId) {
+      where.push('tcd.AdminId = ?');
+      params.push(Number(adminId));
+
+      const sql = `
+        SELECT
+          c.CourseID, 
+          CONCAT(c.CourseName, ' (', s.SubjectName, ')') AS CourseName, 
+          c.StartDate, 
+          c.LastDate, 
+          c.Status_Course_Id,
+          s.SubjectId,
+          (SELECT COUNT(*) FROM enroll e WHERE e.CourseID = c.CourseID) AS StudentCount,
+          (SELECT COUNT(*) FROM course_videos cv 
+           WHERE cv.CourseID = c.CourseID AND cv.SubjectId = s.SubjectId) AS VideoCount,
+          (SELECT COUNT(*) FROM course_files cf 
+           WHERE cf.CourseID = c.CourseID AND cf.SubjectId = s.SubjectId) AS FileCount,
+          tcd.TotalHours AS TotalHoursScheduled,
+          COALESCE((
+            SELECT SUM(TIMESTAMPDIFF(MINUTE, cs.StartDateTime, cs.EndDateTime)) / 60
+            FROM (SELECT DISTINCT CourseScheduleDetailId FROM tutorcheckin) tc
+            JOIN coursescheduledetails csd ON tc.CourseScheduleDetailId = csd.CourseScheduleDetailId
+            JOIN courseschedule cs ON csd.CourseScheduleId = cs.CourseScheduleId
+            WHERE csd.CourseID = c.CourseID AND csd.SubjectId = s.SubjectId AND csd.AdminId = tcd.AdminId
+          ), 0) AS CompletedHours
+        FROM courses c
+        JOIN tutorcoursedetails tcd ON c.CourseID = tcd.CourseID
+        JOIN subjects s ON tcd.SubjectId = s.SubjectId
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        GROUP BY c.CourseID, s.SubjectId, tcd.AdminId
+        ORDER BY c.CourseID DESC
+      `;
+
+      const [rows] = await pool.query(sql, params);
+      return res.json(rows);
     }
 
-    const sql = `
+    const sqlAdmin = `
       SELECT
         CourseID, CourseName, CourseImage,
         StartDate, LastDate, Remark,
         Price, Discount, FullCost, Installments, VideosFree,
-        Created_at, Updated_at, Deleted_at,
-        Status_Course_Id, Course_Availability_Id, Term_Id
+        Status_Course_Id, Course_Availability_Id, Term_Id,
+        (SELECT COUNT(*) FROM enroll WHERE enroll.CourseID = courses.CourseID) AS StudentCount
       FROM courses
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY CourseID DESC
     `;
+    const [rowsAdmin] = await pool.query(sqlAdmin, params);
+    res.json(rowsAdmin);
 
-    const [rows] = await pool.query(sql, params);
-    res.json(rows);
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// GET /courses/:id (ดึงรายการเดียว)
-router.get('/:id', async (req, res) => {
+
+// GET /courses/:id/students
+router.get('/:id/students', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    const [rows] = await pool.query(
-      `
-      SELECT
-        CourseID, CourseName, CourseImage,
-        StartDate, LastDate, Remark,
-        Price, Discount, FullCost, Installments, VideosFree,
-        Created_at, Updated_at, Deleted_at,
-        Status_Course_Id, Course_Availability_Id, Term_Id
-      FROM courses
-      WHERE CourseID = ?
-      `,
-      [id]
+    const courseId = Number(req.params.id);
+
+    if (isNaN(courseId)) {
+      return res.status(400).json({
+        message: 'Invalid Course ID: ค่าที่ส่งมาไม่ใช่ตัวเลข',
+        received: req.params.id
+      });
+    }
+
+    const [courseCheck] = await pool.query(
+      'SELECT CourseName FROM courses WHERE CourseID = ?',
+      [courseId]
     );
 
-    if (!rows.length) return res.status(404).json({ message: 'Not found' });
-    res.json(rows[0]);
+    if (!courseCheck.length) {
+      return res.status(404).json({ message: 'ไม่พบคอร์สที่ระบุ' });
+    }
+
+    const sql = `
+      SELECT 
+        u.*,
+        e.EnrollId,
+        e.Status_Enroll_Id,
+        gl.GradeDetail,
+
+        (
+          SELECT COUNT(*)
+          FROM tutorcheckin tc
+          JOIN coursescheduledetails csd ON tc.CourseScheduleDetailId = csd.CourseScheduleDetailId
+          LEFT JOIN studentattendance sa 
+            ON sa.CourseScheduleDetailId = tc.CourseScheduleDetailId
+            AND sa.UserId = u.UserId
+          WHERE csd.CourseID = e.CourseID
+            AND sa.Status = '1'
+        ) AS TotalAttended,
+
+        (
+          SELECT COUNT(DISTINCT tc.CourseScheduleDetailId)
+          FROM tutorcheckin tc
+          JOIN coursescheduledetails csd ON tc.CourseScheduleDetailId = csd.CourseScheduleDetailId
+          WHERE csd.CourseID = e.CourseID
+        ) AS TotalClassHeld
+
+      FROM enroll e
+      JOIN users u ON e.UserId = u.UserId
+      LEFT JOIN gradelevel gl ON u.GradeLevelId = gl.GradeLevelId
+      WHERE e.CourseID = ?
+    `;
+
+    const [students] = await pool.query(sql, [courseId]);
+
+    res.json({
+      courseInfo: {
+        id: courseId,
+        name: courseCheck[0].CourseName,
+        studentCount: students.length
+      },
+      students: students.map(std => ({
+        ...std,
+        name: `${std.GenderId === 2 ? 'ด.ญ.' : std.GenderId === 1 ? 'ด.ช.' : ''}${std.Firstname || ''} ${std.Lastname || ''}${std.Nickname ? ` (${std.Nickname})` : ''}`,
+        lineId: std.LineID || 'ไม่มี Line ID',
+        gradeLevel: std.GradeDetail || 'ไม่ระบุชั้น',
+        gpa: std.GPA ?? '-',
+        birthDate: std.BirthOfDate ?? null,
+        totalAttended: std.TotalAttended ?? 0,
+        totalClassHeld: std.TotalClassHeld ?? 0,
+      }))
+    });
+
   } catch (e) {
-    console.error(e);
+    console.error('Error in GET /courses/:id/students:', e);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// POST /courses (สร้างคอร์สใหม่)
-// body: CourseName (required)
-// optional: StartDate, LastDate, Remark, Price, Discount, FullCost,
-//          Installments, VideosFree, Status_Course_Id, Course_Availability_Id, Term_Id
+//  NEW: GET /courses/:id/students/:studentId/videos
+//  รายการคลิปในคอร์ส + สถานะว่านักเรียนดูแล้ว/ยังไม่ดู
+router.get('/:id/students/:studentId/videos', async (req, res) => {
+  try {
+    const courseId = Number(req.params.id);
+    const studentId = Number(req.params.studentId);
+
+    if (isNaN(courseId) || isNaN(studentId)) {
+      return res.status(400).json({ message: 'Invalid ID' });
+    }
+
+    const sql = `
+      SELECT
+        cv.VideoId,
+        cv.VideoTitle                                         AS title,
+        cv.Duration                                           AS durationSec,
+        s.SubjectName                                         AS subject,
+        CASE WHEN vv.VideoId IS NOT NULL THEN 1 ELSE 0 END   AS watched,
+        vv.WatchedAt                                          AS watchedAt,
+        COALESCE(vv.Progress, 0)                             AS progress
+      FROM course_videos cv
+      JOIN subjects s ON cv.SubjectId = s.SubjectId
+      LEFT JOIN video_views vv
+        ON  vv.VideoId = cv.VideoId
+        AND vv.UserId  = ?
+      WHERE cv.CourseID = ?
+      ORDER BY cv.VideoId ASC
+    `;
+
+    const [rows] = await pool.query(sql, [studentId, courseId]);
+
+    const result = rows.map(r => ({
+      id: r.VideoId,
+      title: r.title,
+      duration: r.durationSec ? `${Math.round(r.durationSec / 60)} นาที` : '-',
+      subject: r.subject,
+      watched: r.watched === 1,
+      watchedAt: r.watchedAt ? r.watchedAt.toISOString().slice(0, 10) : null,
+      progress: r.progress ?? 0,
+    }));
+
+    res.json(result);
+  } catch (e) {
+    console.error('Error in GET /courses/:id/students/:studentId/videos:', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
+// POST /courses
 router.post('/', async (req, res) => {
   try {
     const b = req.body || {};
-
-    if (!b.CourseName) {
-      return res.status(400).json({ message: 'CourseName is required' });
-    }
+    if (!b.CourseName) return res.status(400).json({ message: 'CourseName is required' });
 
     const payload = {
       CourseName: b.CourseName,
@@ -99,67 +221,40 @@ router.post('/', async (req, res) => {
     };
 
     const [result] = await pool.query(
-      `
-      INSERT INTO courses (
+      `INSERT INTO courses (
         CourseName, StartDate, LastDate, Remark,
         Price, Discount, FullCost, Installments, VideosFree,
         Created_at, Updated_at, Deleted_at,
         Status_Course_Id, Course_Availability_Id, Term_Id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NULL, NULL, ?, ?, ?)
-      `,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NULL, NULL, ?, ?, ?)`,
       [
-        payload.CourseName,
-        payload.StartDate,
-        payload.LastDate,
-        payload.Remark,
-        payload.Price,
-        payload.Discount,
-        payload.FullCost,
-        payload.Installments,
-        payload.VideosFree,
-        payload.Status_Course_Id,
-        payload.Course_Availability_Id,
-        payload.Term_Id,
+        payload.CourseName, payload.StartDate, payload.LastDate, payload.Remark,
+        payload.Price, payload.Discount, payload.FullCost, payload.Installments, payload.VideosFree,
+        payload.Status_Course_Id, payload.Course_Availability_Id, payload.Term_Id
       ]
     );
 
-    res.status(201).json({
-      CourseID: result.insertId,
-      ...payload,
-    });
+    res.status(201).json({ CourseID: result.insertId, ...payload });
   } catch (e) {
     console.error(e);
-
     if (String(e.message || '').includes('foreign key constraint fails')) {
-      return res.status(400).json({
-        message: 'Foreign key constraint fails: ตรวจสอบ Status_Course_Id / Course_Availability_Id / Term_Id ว่ามีอยู่จริงในตารางแม่',
-        error: e.message,
-      });
+      return res.status(400).json({ message: 'ตรวจสอบข้อมูลในตารางแม่ (Foreign Key)' });
     }
-
-    res.status(500).json({ message: e.message || 'Server error' });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// PUT /courses/:id (อัปเดตคอร์ส)
+// PUT /courses/:id
 router.put('/:id', async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const id = Number(req.params.id);
-
-    // เช็คมีคอร์สไหม
-    const [oldRows] = await conn.query(
-      'SELECT CourseID FROM courses WHERE CourseID = ?',
-      [id]
-    );
+    const [oldRows] = await conn.query('SELECT CourseID FROM courses WHERE CourseID = ?', [id]);
     if (!oldRows.length) return res.status(404).json({ message: 'Not found' });
 
     const b = req.body || {};
-
-    // ใช้ COALESCE ทำให้ส่งมาเฉพาะบางฟิลด์ได้
-    const [result] = await conn.query(
-      `
-      UPDATE courses SET
+    await conn.query(
+      `UPDATE courses SET
         CourseName = COALESCE(?, CourseName),
         StartDate = COALESCE(?, StartDate),
         LastDate = COALESCE(?, LastDate),
@@ -173,13 +268,9 @@ router.put('/:id', async (req, res) => {
         Course_Availability_Id = COALESCE(?, Course_Availability_Id),
         Term_Id = COALESCE(?, Term_Id),
         Updated_at = NOW()
-      WHERE CourseID = ?
-      `,
+      WHERE CourseID = ?`,
       [
-        b.CourseName ?? null,
-        b.StartDate ?? null,
-        b.LastDate ?? null,
-        b.Remark ?? null,
+        b.CourseName ?? null, b.StartDate ?? null, b.LastDate ?? null, b.Remark ?? null,
         b.Price != null ? Number(b.Price) : null,
         b.Discount != null ? Number(b.Discount) : null,
         b.FullCost != null ? Number(b.FullCost) : null,
@@ -188,55 +279,84 @@ router.put('/:id', async (req, res) => {
         b.Status_Course_Id != null ? Number(b.Status_Course_Id) : null,
         b.Course_Availability_Id != null ? Number(b.Course_Availability_Id) : null,
         b.Term_Id != null ? Number(b.Term_Id) : null,
-        id,
+        id
       ]
     );
 
-    if (!result.affectedRows) return res.status(400).json({ message: 'No change' });
     res.json({ message: 'Updated' });
   } catch (e) {
     console.error(e);
-    if (String(e.message || '').includes('foreign key constraint fails')) {
-      return res.status(400).json({
-        message: 'Foreign key constraint fails: ตรวจสอบ Status_Course_Id / Course_Availability_Id / Term_Id ว่ามีอยู่จริงในตารางแม่',
-        error: e.message,
-      });
-    }
     res.status(500).json({ message: 'Server error' });
   } finally {
     conn.release();
   }
 });
 
-// DELETE /courses/:id (ลบคอร์ส)
-// หมายเหตุ: ถ้ามีตารางลูกผูกอยู่ (enroll/courseDetails/...) จะลบไม่ได้ ต้องลบลูกก่อน
+
+// DELETE /courses/:id
 router.delete('/:id', async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const id = Number(req.params.id);
-
     const [rows] = await conn.query('SELECT CourseID FROM courses WHERE CourseID = ?', [id]);
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
 
-    const [result] = await conn.query('DELETE FROM courses WHERE CourseID = ?', [id]);
-    if (!result.affectedRows) return res.status(400).json({ message: 'Delete failed' });
-
+    await conn.query('DELETE FROM courses WHERE CourseID = ?', [id]);
     res.json({ message: 'Deleted' });
   } catch (e) {
     console.error(e);
-
-    // ลบไม่ได้เพราะมี FK จากตารางลูก
     if (String(e.message || '').includes('foreign key constraint fails')) {
-      return res.status(409).json({
-        message: 'Delete blocked by foreign key: มีตารางอื่นอ้างถึงคอร์สนี้ (เช่น enroll/courseDetails/...) ต้องลบข้อมูลลูกก่อน',
-        error: e.message,
-      });
+      return res.status(409).json({ message: 'ไม่สามารถลบได้เนื่องจากมีข้อมูลนักเรียนลงทะเบียนอยู่' });
     }
-
     res.status(500).json({ message: 'Server error' });
   } finally {
     conn.release();
   }
 });
+
+// GET /courses/:courseId/students/:studentId/attendance
+router.get('/:courseId/students/:studentId/attendance', async (req, res) => {
+  try {
+    const { courseId, studentId } = req.params
+
+    const [rows] = await pool.query(
+      `SELECT 
+        sa.Status,
+        DATE(tc.Created_at) as date,
+        s.SubjectName as subject,
+        TIME_FORMAT(cs.StartTime, '%H:%i') as startTime,
+        TIME_FORMAT(cs.EndTime, '%H:%i') as endTime
+      FROM studentattendance sa
+      JOIN tutorcheckin tc 
+        ON sa.CourseScheduleDetailId = tc.CourseScheduleDetailId
+        AND DATE(tc.Created_at) = DATE(sa.Created_at)
+      JOIN coursescheduledetails csd 
+        ON sa.CourseScheduleDetailId = csd.CourseScheduleDetailId
+      JOIN courseschedule cs 
+        ON csd.CourseScheduleId = cs.CourseScheduleId
+      LEFT JOIN subjects s 
+        ON csd.SubjectId = s.SubjectId
+      WHERE sa.UserId = ?
+        AND csd.CourseID = ?
+      ORDER BY tc.Created_at DESC`,
+      [studentId, courseId]
+    )
+
+    const result = rows.map(row => ({
+      date: row.date instanceof Date 
+        ? `${row.date.getFullYear()}-${String(row.date.getMonth()+1).padStart(2,'0')}-${String(row.date.getDate()).padStart(2,'0')}`
+        : String(row.date),
+      subject: row.subject || 'ไม่ระบุวิชา',
+      status: row.Status == 1 ? 'present' : 'absent',
+      startTime: row.startTime,
+      endTime: row.endTime,
+    }))
+
+    res.json(result)
+  } catch (e) {
+    console.error('attendance error:', e)
+    res.status(500).json({ message: 'Server error' })
+  }
+})
 
 module.exports = router;

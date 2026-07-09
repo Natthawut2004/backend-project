@@ -233,7 +233,8 @@ router.post('/login-admin', async (req, res) => {
                 id: admin.AdminId,
                 username: admin.Username,
                 roleId: admin.RoleId, // ส่งกลับไปให้ React ใช้ตัดสินใจ
-                firstname: admin.Firstname
+                firstname: admin.Firstname,
+                photo: admin.Photo
             }
         });
 
