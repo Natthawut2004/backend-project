@@ -1,46 +1,54 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 
-// ─── Multer Setup ────────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = 'uploads/news';
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `news_${Date.now()}_${Math.random().toString(36).slice(2, 7)}${ext}`);
-  },
-});
+const { uploadImage } = require('../middlewares/upload');
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error('Only image files are allowed'));
-    }
-    cb(null, true);
-  },
-});
-
-// รับทั้ง coverImage (1 รูป) และ extraImages (หลายรูป)
-const uploadFields = upload.fields([
+const uploadFields = uploadImage.fields([
   { name: 'coverImage', maxCount: 1 },
   { name: 'extraImages', maxCount: 10 },
 ]);
 
+// const multer = require('multer');
+// const path = require('path');
+// const fs = require('fs');
+
+// ─── Multer Setup ────────────────────────────────────────────────────────────
+// const storage = multer.diskStorage({
+//   destination: (req, file, cb) => {
+//     const dir = 'uploads/news';
+//     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+//     cb(null, dir);
+//   },
+//   filename: (req, file, cb) => {
+//     const ext = path.extname(file.originalname);
+//     cb(null, `news_${Date.now()}_${Math.random().toString(36).slice(2, 7)}${ext}`);
+//   },
+// });
+
+// const upload = multer({
+//   storage,
+//   limits: { fileSize: 5 * 1024 * 1024 },
+//   fileFilter: (req, file, cb) => {
+//     if (!file.mimetype.startsWith('image/')) {
+//       return cb(new Error('Only image files are allowed'));
+//     }
+//     cb(null, true);
+//   },
+// });
+
+// รับทั้ง coverImage (1 รูป) และ extraImages (หลายรูป)
+// const uploadFields = upload.fields([
+//   { name: 'coverImage', maxCount: 1 },
+//   { name: 'extraImages', maxCount: 10 },
+// ]);
+
 // ─── Helper: ลบไฟล์บนดิสก์ ───────────────────────────────────────────────────
-function deleteFile(filePath) {
-  if (!filePath) return;
-  const abs = path.join(__dirname, '..', filePath);
-  if (fs.existsSync(abs)) fs.unlinkSync(abs);
-}
+// function deleteFile(filePath) {
+//   if (!filePath) return;
+//   const abs = path.join(__dirname, '..', filePath);
+//   if (fs.existsSync(abs)) fs.unlinkSync(abs);
+// }
 
 // ─── GET /stats ───────────────────────────────────────────────────────────────
 router.get('/stats', async (req, res) => {
@@ -74,7 +82,7 @@ router.get('/', async (req, res) => {
       params.push(`%${search}%`, `%${search}%`);
     }
     if (category) { conditions.push('n.Category = ?'); params.push(category); }
-    if (target)   { conditions.push('n.TargetAudience = ?'); params.push(target); }
+    if (target) { conditions.push('n.TargetAudience = ?'); params.push(target); }
 
     const where = `WHERE ${conditions.join(' AND ')}`;
 
@@ -84,7 +92,7 @@ router.get('/', async (req, res) => {
 
     // ดึงรายการพร้อม extra images แบบ JSON array
     const [rows] = await pool.query(
-        `SELECT n.*,
+      `SELECT n.*,
                 GROUP_CONCAT(
                   IF(ni.ImagePath IS NOT NULL,
                      CONCAT(ni.ImageId, '||', ni.ImagePath, '||', ni.SortOrder),
@@ -97,19 +105,19 @@ router.get('/', async (req, res) => {
          GROUP BY n.NewsId
          ORDER BY n.Created_at DESC
          LIMIT ? OFFSET ?`,
-        [...params, parseInt(limit), offset]
-      );
+      [...params, parseInt(limit), offset]
+    );
 
     // Parse JSON string → array และกรอง null ออก
     const data = rows.map(r => ({
-        ...r,
-        ExtraImages: r.ExtraImages
-          ? r.ExtraImages.split(',').map(item => {
-              const [ImageId, ImagePath, SortOrder] = item.split('||');
-              return { ImageId, ImagePath, SortOrder };
-            })
-          : [],
-      }));
+      ...r,
+      ExtraImages: r.ExtraImages
+        ? r.ExtraImages.split(',').map(item => {
+          const [ImageId, ImagePath, SortOrder] = item.split('||');
+          return { ImageId, ImagePath, SortOrder };
+        })
+        : [],
+    }));
 
     res.json({
       data,
@@ -131,8 +139,11 @@ router.post('/', uploadFields, async (req, res) => {
     const safeTarget = allowedTargets.includes(targetAudience) ? targetAudience : 'public';
 
     // รูปหน้าปก
+    // const coverFile = req.files?.coverImage?.[0];
+    // const coverPath = coverFile ? `/uploads/news/${coverFile.filename}` : null;
+
     const coverFile = req.files?.coverImage?.[0];
-    const coverPath = coverFile ? `/uploads/news/${coverFile.filename}` : null;
+    const coverPath = coverFile ? coverFile.path : null;
 
     const [result] = await pool.query(
       `INSERT INTO news (Title, Detail, Image, Category, TargetAudience, IsDeleted, Created_at)
@@ -145,7 +156,8 @@ router.post('/', uploadFields, async (req, res) => {
     // รูปเพิ่มเติม
     const extraFiles = req.files?.extraImages || [];
     if (extraFiles.length > 0) {
-      const values = extraFiles.map((f, i) => [newsId, `/uploads/news/${f.filename}`, i]);
+      // const values = extraFiles.map((f, i) => [newsId, `/uploads/news/${f.filename}`, i]);
+      const values = extraFiles.map((f, i) => [newsId, f.path, i]);
       await pool.query(
         'INSERT INTO news_images (NewsId, ImagePath, SortOrder) VALUES ?',
         [values]
@@ -177,11 +189,18 @@ router.put('/:id', uploadFields, async (req, res) => {
       : existing[0].TargetAudience;
 
     // ── อัปเดตรูปหน้าปก ──
+    // let coverPath = existing[0].Image;
+    // const coverFile = req.files?.coverImage?.[0];
+    // if (coverFile) {
+    //   deleteFile(coverPath); // ลบไฟล์เก่า
+    //   coverPath = `/uploads/news/${coverFile.filename}`;
+    // }
+
     let coverPath = existing[0].Image;
     const coverFile = req.files?.coverImage?.[0];
     if (coverFile) {
-      deleteFile(coverPath); // ลบไฟล์เก่า
-      coverPath = `/uploads/news/${coverFile.filename}`;
+      coverPath = coverFile.path;
+      // หมายเหตุ: ไฟล์เก่าจะยังค้างอยู่บน Cloudinary — TODO ทำความสะอาดทีหลัง
     }
 
     await pool.query(
@@ -191,15 +210,27 @@ router.put('/:id', uploadFields, async (req, res) => {
     );
 
     // ── ลบรูปเพิ่มเติมที่เลือกลบ ──
+    // if (removedExtraImages) {
+    //   let ids = [];
+    //   try { ids = JSON.parse(removedExtraImages); } catch { }
+    //   if (ids.length > 0) {
+    //     const [toDelete] = await pool.query(
+    //       `SELECT ImagePath FROM news_images WHERE ImageId IN (?) AND NewsId = ?`,
+    //       [ids, id]
+    //     );
+    //     toDelete.forEach(r => deleteFile(r.ImagePath));
+    //     await pool.query(
+    //       `DELETE FROM news_images WHERE ImageId IN (?) AND NewsId = ?`,
+    //       [ids, id]
+    //     );
+    //   }
+    // }
+
+    // แก้เป็น (ตัดส่วนลบไฟล์ disk ออก เหลือแค่ลบจาก database)
     if (removedExtraImages) {
       let ids = [];
-      try { ids = JSON.parse(removedExtraImages); } catch {}
+      try { ids = JSON.parse(removedExtraImages); } catch { }
       if (ids.length > 0) {
-        const [toDelete] = await pool.query(
-          `SELECT ImagePath FROM news_images WHERE ImageId IN (?) AND NewsId = ?`,
-          [ids, id]
-        );
-        toDelete.forEach(r => deleteFile(r.ImagePath));
         await pool.query(
           `DELETE FROM news_images WHERE ImageId IN (?) AND NewsId = ?`,
           [ids, id]
@@ -214,7 +245,8 @@ router.put('/:id', uploadFields, async (req, res) => {
       const [[{ maxOrder }]] = await pool.query(
         'SELECT IFNULL(MAX(SortOrder), -1) AS maxOrder FROM news_images WHERE NewsId = ?', [id]
       );
-      const values = extraFiles.map((f, i) => [id, `/uploads/news/${f.filename}`, maxOrder + 1 + i]);
+      const values = extraFiles.map((f, i) => [id, f.path, maxOrder + 1 + i]);
+      // const values = extraFiles.map((f, i) => [id, `/uploads/news/${f.filename}`, maxOrder + 1 + i]);
       await pool.query(
         'INSERT INTO news_images (NewsId, ImagePath, SortOrder) VALUES ?',
         [values]

@@ -2,14 +2,16 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
-const multer = require('multer');
-const path = require('path');
+// const multer = require('multer');
+// const path = require('path');
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => cb(null, 'tutor_' + Date.now() + path.extname(file.originalname))
-});
-const upload = multer({ storage });
+// const storage = multer.diskStorage({
+//   destination: (req, file, cb) => cb(null, 'uploads/'),
+//   filename: (req, file, cb) => cb(null, 'tutor_' + Date.now() + path.extname(file.originalname))
+// });
+// const upload = multer({ storage });
+
+const { uploadImage } = require('../middlewares/upload');
 
 async function q(sql, params = []) {
   const [rows] = await pool.query(sql, params);
@@ -218,10 +220,10 @@ function generateAllWeeks(startStr, endStr) {
     const we = new Date(cur);
     we.setDate(we.getDate() + 6);
     weeks.push({
-      YearWeek:   getISOYearWeek(cur),
-      WeekStart:  ws,
-      WeekEnd:    we.toISOString().slice(0, 10),
-      weekIndex:  idx++,
+      YearWeek: getISOYearWeek(cur),
+      WeekStart: ws,
+      WeekEnd: we.toISOString().slice(0, 10),
+      weekIndex: idx++,
     });
     cur.setDate(cur.getDate() + 7);
   }
@@ -232,9 +234,9 @@ function generateAllWeeks(startStr, endStr) {
 router.get('/tutors/absence-heatmap', async (req, res) => {
   const now = new Date();
   const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-  const defaultEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+  const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
   const rangeStart = req.query.startDate || defaultStart;
-  const rangeEnd   = req.query.endDate   || defaultEnd;
+  const rangeEnd = req.query.endDate || defaultEnd;
 
   try {
     // สร้างทุกสัปดาห์ก่อน (รวมสัปดาห์ที่ไม่มีการขาด)
@@ -281,7 +283,7 @@ router.get('/tutors/absence-heatmap', async (req, res) => {
     }
 
     // daySummary: รวมต่อวันในสัปดาห์ (2=จ ... 1=อา)
-    const daySummary = { 1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0 };
+    const daySummary = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 };
     for (const t of Object.values(tutorMap)) {
       for (const days of Object.values(t.weeks)) {
         for (const [d, cnt] of Object.entries(days)) {
@@ -300,8 +302,8 @@ router.get('/tutors/absence-heatmap', async (req, res) => {
     }
 
     res.json({
-      weeks:       allWeeks,
-      tutors:      Object.values(tutorMap).sort((a, b) => b.totalMissed - a.totalMissed),
+      weeks: allWeeks,
+      tutors: Object.values(tutorMap).sort((a, b) => b.totalMissed - a.totalMissed),
       daySummary,
       weekSummary,
     });
@@ -361,7 +363,7 @@ router.get('/tutors/performance', async (req, res) => {
     .toISOString().slice(0, 10);
   const defaultEnd = now.toISOString().slice(0, 10);
   const startDate = req.query.startDate || defaultStart;
-  const endDate   = req.query.endDate   || defaultEnd;
+  const endDate = req.query.endDate || defaultEnd;
 
   try {
     const rows = await q(`
@@ -437,22 +439,22 @@ router.get('/tutors/performance', async (req, res) => {
     const maxMinutes = Math.max(...rows.map(r => r.TotalMinutes), 1);
 
     const data = rows.map(r => {
-      const checkinScore    = r.CheckinRate;                                    // 40%
-      const consistScore    = r.ConsistencyScore;                               // 30%
-      const workloadScore   = Math.round(r.TotalMinutes / maxMinutes * 100);   // 30%
+      const checkinScore = r.CheckinRate;                                    // 40%
+      const consistScore = r.ConsistencyScore;                               // 30%
+      const workloadScore = Math.round(r.TotalMinutes / maxMinutes * 100);   // 30%
 
       const performanceScore = Math.round(
-        checkinScore  * 0.40 +
-        consistScore  * 0.30 +
+        checkinScore * 0.40 +
+        consistScore * 0.30 +
         workloadScore * 0.30
       );
 
       return {
         ...r,
-        WorkloadScore:    workloadScore,
-        TotalHours:       +(r.TotalMinutes / 60).toFixed(1),
+        WorkloadScore: workloadScore,
+        TotalHours: +(r.TotalMinutes / 60).toFixed(1),
         PerformanceScore: performanceScore,
-        Badge:            getBadgeLabel(performanceScore),
+        Badge: getBadgeLabel(performanceScore),
       };
     }).sort((a, b) => b.PerformanceScore - a.PerformanceScore)
       .map((r, i) => ({ ...r, Rank: i + 1 }));
@@ -593,9 +595,12 @@ router.put('/tutors/:id', async (req, res) => {
 });
 
 // ─── PATCH /api/admin/tutors/:id/photo ───────────────────────────────────────
-router.patch('/tutors/:id/photo', upload.single('photo'), async (req, res) => {
+// router.patch('/tutors/:id/photo', upload.single('photo'), async (req, res) => {
+//   const { id } = req.params;
+//   const photoPath = req.file ? `/uploads/${req.file.filename}` : null;
+router.patch('/tutors/:id/photo', uploadImage.single('photo'), async (req, res) => {
   const { id } = req.params;
-  const photoPath = req.file ? `/uploads/${req.file.filename}` : null;
+  const photoPath = req.file ? req.file.path : null;
   if (!photoPath) return res.status(400).json({ message: 'ไม่พบไฟล์รูปภาพ' });
   try {
     await q('UPDATE admin SET Photo = ?, Updated_at = NOW() WHERE AdminId = ?', [photoPath, id]);
@@ -688,9 +693,12 @@ router.get('/tutors/:id/unpaid-sessions', async (req, res) => {
 
 // ─── POST /api/admin/tutor-payments ──────────────────────────────────────────
 // บันทึกการจ่ายเงิน + อัปโหลดสลิป
-router.post('/tutor-payments', upload.single('slip'), async (req, res) => {
+// router.post('/tutor-payments', upload.single('slip'), async (req, res) => {
+//   const { adminId, checkinIds, paymentDate, billNo, remark } = req.body;
+//   const slipPath = req.file ? `/uploads/${req.file.filename}` : null;
+router.post('/tutor-payments', uploadImage.single('slip'), async (req, res) => {
   const { adminId, checkinIds, paymentDate, billNo, remark } = req.body;
-  const slipPath = req.file ? `/uploads/${req.file.filename}` : null;
+  const slipPath = req.file ? req.file.path : null;
 
   let ids;
   try {
@@ -700,7 +708,7 @@ router.post('/tutor-payments', upload.single('slip'), async (req, res) => {
   }
 
   if (!ids?.length) return res.status(400).json({ message: 'กรุณาเลือก session อย่างน้อย 1 รายการ' });
-  if (!adminId)     return res.status(400).json({ message: 'ไม่พบ adminId' });
+  if (!adminId) return res.status(400).json({ message: 'ไม่พบ adminId' });
 
   const conn = await pool.getConnection();
   try {
@@ -747,7 +755,7 @@ router.post('/tutor-payments', upload.single('slip'), async (req, res) => {
     `, [
       totalAmount.toFixed(2),
       paymentDate || null,
-      billNo      || null,
+      billNo || null,
       slipPath
     ]);
 
@@ -761,10 +769,10 @@ router.post('/tutor-payments', upload.single('slip'), async (req, res) => {
 
     await conn.commit();
     res.status(201).json({
-      message:        'บันทึกการจ่ายเงินสำเร็จ',
+      message: 'บันทึกการจ่ายเงินสำเร็จ',
       TutorPaymentId: paymentId,
-      TotalAmount:    parseFloat(totalAmount.toFixed(2)),
-      SessionCount:   ids.length,
+      TotalAmount: parseFloat(totalAmount.toFixed(2)),
+      SessionCount: ids.length,
     });
   } catch (err) {
     await conn.rollback();

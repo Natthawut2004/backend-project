@@ -1,24 +1,25 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
-const multer = require('multer');
-const path = require('path');
+// const multer = require('multer');
+// const path = require('path');
+const { uploadImage } = require('../middlewares/upload');
 
 //const NOW = () => new Date('2026-03-27'); // mock วันศุกร์
 const NOW = () => new Date(); // ของจริง — ใช้วันที่ปัจจุบัน
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/');
-  },
-  filename: function (req, file, cb) {
-    cb(null, 'teaching_' + Date.now() + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage });
+// const storage = multer.diskStorage({
+//   destination: function (req, file, cb) {
+//     cb(null, 'uploads/');
+//   },
+//   filename: function (req, file, cb) {
+//     cb(null, 'teaching_' + Date.now() + path.extname(file.originalname));
+//   }
+// });
+// const upload = multer({ storage });
 
 // Phase 1 — บันทึกต้นคาบ (รูปเริ่ม + เช็กชื่อ)
-router.post('/record-teaching/start', upload.single('photoStart'), async (req, res) => {
+router.post('/record-teaching/start', uploadImage.single('photoStart'), async (req, res) => {
   const { adminId, courseScheduleDetailId, remark, attendanceData } = req.body;
 
   console.log('body:', req.body)
@@ -33,7 +34,7 @@ router.post('/record-teaching/start', upload.single('photoStart'), async (req, r
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const photoStartPath = req.file ? `/uploads/${req.file.filename}` : null;
+    const photoStartPath = req.file ? req.file.path : null;
 
     const [result] = await conn.query(
       `INSERT INTO tutorcheckin (AdminId, CourseScheduleDetailId, PhotoStart, Remark, Created_at)
@@ -64,9 +65,9 @@ router.post('/record-teaching/start', upload.single('photoStart'), async (req, r
 });
 
 // Phase 2 — ปิดคาบ (รูปจบ)
-router.put('/record-teaching/:id/end', upload.single('photoEnd'), async (req, res) => {
+router.put('/record-teaching/:id/end', uploadImage.single('photoEnd'), async (req, res) => {
   const recordId = Number(req.params.id);
-  const photoEndPath = req.file ? `/uploads/${req.file.filename}` : null;
+  const photoEndPath = req.file ? req.file.path : null;
 
   if (!photoEndPath) return res.status(400).json({ message: 'ไม่พบรูปท้ายคาบ' });
 
@@ -267,8 +268,8 @@ router.get('/:id/schedule', async (req, res) => {
 });
 
 // POST อัปโหลดรูป
-router.post('/:id/upload-profile', upload.single('profileImage'), async (req, res) => {
-  const fileName = req.file ? `/uploads/${req.file.filename}` : null;
+router.post('/:id/upload-profile', uploadImage.single('profileImage'), async (req, res) => {
+  const fileName = req.file ? req.file.path : null;
   await pool.query('UPDATE admin SET Photo = ? WHERE AdminId = ?', [fileName, req.params.id]);
   res.json({ imageUrl: fileName });
 });
