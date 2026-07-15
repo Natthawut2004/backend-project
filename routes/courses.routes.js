@@ -43,7 +43,8 @@ router.get('/', async (req, res) => {
         JOIN tutorcoursedetails tcd ON c.CourseID = tcd.CourseID
         JOIN subjects s ON tcd.SubjectId = s.SubjectId
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        GROUP BY c.CourseID, s.SubjectId, tcd.AdminId
+        GROUP BY c.CourseID, s.SubjectId, tcd.AdminId, c.CourseName, s.SubjectName,
+         c.StartDate, c.LastDate, c.Status_Course_Id, tcd.TotalHours
         ORDER BY c.CourseID DESC
       `;
 
@@ -71,6 +72,110 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ★ เพิ่ม: GET /courses/:id — คอร์สเดี่ยว สำหรับหน้ารายละเอียดคอร์สฝั่งนักเรียน (public)
+// ใช้ join ชุดเดียวกับ router ฝั่งแอดมิน เพื่อให้ Status_Course_Name / Term_Name /
+// Course_Availability_Name มาครบ จะได้ตัดสินใจ badge/ปุ่มปิดรับสมัครได้ตรงกัน
+router.get('/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'Invalid Course ID' });
+
+    const sql = `
+      SELECT
+        c.*,
+        DATE_FORMAT(c.StartDate, '%Y-%m-%d') AS StartDate,
+        DATE_FORMAT(c.LastDate, '%Y-%m-%d') AS LastDate,
+        sc.Status_Course_Name,
+        ca.Course_Availability_Name,
+        t.Term_Name,
+        COUNT(DISTINCT e.EnrollId) AS StudentCount
+      FROM courses c
+      LEFT JOIN status_course        sc ON sc.Status_Course_Id        = c.Status_Course_Id
+      LEFT JOIN course_availability  ca ON ca.Course_Availability_Id  = c.Course_Availability_Id
+      LEFT JOIN term                  t ON t.Term_Id                  = c.Term_Id
+      LEFT JOIN enroll                e ON e.CourseID                 = c.CourseID
+      WHERE c.CourseID = ? AND c.Deleted_at IS NULL
+      GROUP BY c.CourseID
+    `;
+    const [rows] = await pool.query(sql, [id]);
+    if (!rows.length) return res.status(404).json({ message: 'ไม่พบคอร์สนี้' });
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('[GET /courses/:id]', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ★ เพิ่ม: GET /courses/:id/subjects — วิชา+ติวเตอร์+ชั่วโมง สำหรับหน้าคอร์ส (public,
+// เหมือน endpoint ของแอดมินแต่ตัด AdminId ทิ้งเพราะไม่จำเป็นต้องโชว์ฝั่ง public)
+router.get('/:id/subjects', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'Invalid Course ID' });
+
+    const [rows] = await pool.query(`
+      SELECT tcd.TutorCourseDetailId, tcd.SubjectId, tcd.TotalHours,
+             s.SubjectName, a.Nickname, a.Firstname, a.Lastname
+      FROM tutorcoursedetails tcd
+      LEFT JOIN subjects s ON s.SubjectId = tcd.SubjectId
+      LEFT JOIN admin a ON a.AdminId = tcd.AdminId
+      WHERE tcd.CourseID = ?
+      ORDER BY tcd.TutorCourseDetailId
+    `, [id]);
+    res.json(rows);
+  } catch (e) {
+    console.error('[GET /courses/:id/subjects]', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ★ เพิ่ม: GET /courses/:id/preview-videos — คลิปตัวอย่างของคอร์ส (public)
+// ⚠️ ชื่อตาราง "course_preview_videos" เป็นการเดาจากคอลัมน์ที่หน้าแอดมินส่งไป
+// (VideoTitle, VideoUrl, VideoType, Thumbnail, Duration, AdminId) — กรุณาตรวจสอบ
+// ชื่อตารางจริงจาก router ที่รับ POST /admin/courses/:id/preview-videos ก่อนใช้งาน
+router.get('/:id/preview-videos', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'Invalid Course ID' });
+
+    const [rows] = await pool.query(`
+      SELECT VideoId, VideoTitle, VideoUrl, VideoType, Thumbnail, Duration
+      FROM course_preview_videos
+      WHERE CourseID = ?
+      ORDER BY VideoId
+    `, [id]);
+    res.json(rows);
+  } catch (e) {
+    console.error('[GET /courses/:id/preview-videos]', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ★ เพิ่ม: GET /courses/:id/schedule — วันเรียน/เวลาเรียนของแต่ละวิชาในคอร์ส (public)
+// อิงจาก courseschedule.StartDateTime/EndDateTime ที่ใช้จริงในไฟล์นี้อยู่แล้ว
+// (ดู CompletedHours query ด้านบน) — ดึงวัน-เวลาที่ไม่ซ้ำกันของแต่ละวิชา
+router.get('/:id/schedule', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'Invalid Course ID' });
+
+    const [rows] = await pool.query(`
+      SELECT DISTINCT
+        csd.SubjectId,
+        DAYOFWEEK(cs.StartDateTime) - 1 AS DayOfWeek,
+        TIME_FORMAT(cs.StartDateTime, '%H:%i') AS StartTime,
+        TIME_FORMAT(cs.EndDateTime, '%H:%i') AS EndTime
+      FROM coursescheduledetails csd
+      JOIN courseschedule cs ON csd.CourseScheduleId = cs.CourseScheduleId
+      WHERE csd.CourseID = ?
+      ORDER BY DayOfWeek, StartTime
+    `, [id]);
+    res.json(rows);
+  } catch (e) {
+    console.error('[GET /courses/:id/schedule]', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // GET /courses/:id/students
 router.get('/:id/students', async (req, res) => {

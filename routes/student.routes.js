@@ -4,7 +4,6 @@ const router = express.Router();
 const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
 
-
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
 function authStudent(req, res, next) {
