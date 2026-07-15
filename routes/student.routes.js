@@ -4,7 +4,6 @@ const router = express.Router();
 const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
@@ -14,7 +13,7 @@ function authStudent(req, res, next) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
   try {
-    const payload = jwt.verify(auth.slice(7), JWT_SECRET);
+    const payload = jwt.verify(auth.slice(7), process.env.JWT_SECRET); // อ่านตรงนี้แทน
     req.userId = payload.userId;
     next();
   } catch {
